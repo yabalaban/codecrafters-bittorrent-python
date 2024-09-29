@@ -2,6 +2,7 @@ import json
 import sys
 import hashlib
 import requests
+import socket
 
 
 def decode_bencode(value: bytes, offset: int): 
@@ -144,6 +145,42 @@ def query_tracker(file: TorrentFile):
     return peers
 
 
+class BitTorrentHandshakeMessage:
+    def __init__(self, payload: bytearray):
+        self.payload = payload
+
+    @property
+    def info_hash(self) -> str:
+        return self.payload[28:48].hex()
+    
+    @property
+    def peer_id(self) -> str:
+        return self.payload[48:].hex()
+
+    @staticmethod
+    def make(info_hash: bytearray, peer_id: bytearray):
+        packet = bytearray()
+        packet.append(19) # proocol length 
+        packet.extend(b'BitTorrent protocol')
+        packet.extend(bytearray(8))
+        packet.extend(info_hash)
+        packet.extend(peer_id)
+        return BitTorrentHandshakeMessage(packet)
+    
+
+def tcp_handshake(file: TorrentFile, peer: str):
+    host, port = str(peer, encoding='utf-8').split(':')
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.connect((host, int(port)))
+
+    message = BitTorrentHandshakeMessage.make(bytes.fromhex(file.info_hash), b"00112233445566778899")
+    s.sendall(message.payload)
+    data = s.recv(1024)
+    s.close()
+
+    return BitTorrentHandshakeMessage(data)
+
+
 def main():
     command = sys.argv[1]
 
@@ -171,7 +208,15 @@ def main():
             bencoded_value = f.read()
             file = TorrentFile(bencoded_value)
             print("\n".join(query_tracker(file)))
+    elif command == "handshake":
+        file_path = sys.argv[2].encode()
+        address = sys.argv[3].encode()
 
+        with open(file_path, 'rb') as f:
+            bencoded_value = f.read()
+            file = TorrentFile(bencoded_value)
+            message = tcp_handshake(file, address)
+            print("Peer ID: {}".format(message.peer_id))
     else:
         raise NotImplementedError(f"Unknown command {command}")
 
