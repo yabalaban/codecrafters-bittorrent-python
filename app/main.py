@@ -1,5 +1,6 @@
 import json
 import sys
+import hashlib
 
 
 def decode_bencode(value: bytes, offset: int): 
@@ -71,6 +72,33 @@ def decode_bencode(value: bytes, offset: int):
         return (decode_string(), offset)
 
 
+def encode_bencode(value: any) -> bytearray:
+    bencode = bytearray()
+
+    if type(value) == dict: 
+        bencode.append(ord('d'))
+        for k, v in value.items():
+            bencode.extend(encode_bencode(k))
+            bencode.extend(encode_bencode(v))
+        bencode.append(ord('e'))
+    elif type(value) == list:
+        bencode.append(ord('l'))
+        for x in value:
+            bencode.extend(encode_bencode(x)) 
+        bencode.append(ord('e'))
+    elif type(value) == str:
+        bencode.extend(bytearray(str(len(value)), encoding='utf-8'))
+        bencode.append(ord(':'))
+        bencode.extend(bytes(value, encoding='utf-8'))
+    elif type(value) == bytes or type(value) == bytearray: 
+        bencode.extend(bytearray(str(len(value)), encoding='utf-8'))
+        bencode.append(ord(':'))
+        bencode.extend(value)
+    else:
+        bencode.extend(bytes('i{}e'.format(value), encoding='utf-8'))
+
+    return bencode
+
 def main():
     command = sys.argv[1]
 
@@ -92,7 +120,9 @@ def main():
             val, _ = decode_bencode(bencoded_value, 0)
             url = val["announce"]
             l = val["info"]["length"]
-            res = "Tracker URL: {}\nLength: {}".format(str(url, encoding='utf-8'), l)
+            info_bencode = encode_bencode(val['info'])
+
+            res = "Tracker URL: {}\nLength: {}\nInfo Hash: {}".format(str(url, encoding='utf-8'), l, hashlib.sha1(info_bencode).hexdigest())
             print(res)
     else:
         raise NotImplementedError(f"Unknown command {command}")
