@@ -25,12 +25,12 @@ def decode_bencode(value: bytes, offset: int):
         offset += 1
         return val * -1 if negate else val
         
-    def decode_string() -> str:
+    def decode_string() -> bytes:
         nonlocal offset
         l = _parse_number()
         # skip ':'
         offset += 1
-        s = str(value[offset: offset + l], encoding='utf-8')
+        s = value[offset: offset + l]
         # skip str
         offset += l
         return s
@@ -55,7 +55,7 @@ def decode_bencode(value: bytes, offset: int):
         while value[offset] != ord('e'):
             k, offset = decode_bencode(value, offset)
             v, offset = decode_bencode(value, offset)
-            d[k] = v 
+            d[str(k, encoding='utf-8')] = v 
         # skip 'e'
         offset += 1 
         return d
@@ -84,6 +84,16 @@ def main():
 
         val, _ = decode_bencode(bencoded_value, 0)
         print(json.dumps(val, default=bytes_to_str))
+    elif command == "info":
+        file_path = sys.argv[2].encode()
+
+        with open(file_path, 'rb') as f:
+            bencoded_value = f.read()
+            val, _ = decode_bencode(bencoded_value, 0)
+            url = val["announce"]
+            l = val["info"]["length"]
+            res = "Tracker URL: {}\nLength: {}".format(str(url, encoding='utf-8'), l)
+            print(res)
     else:
         raise NotImplementedError(f"Unknown command {command}")
 
