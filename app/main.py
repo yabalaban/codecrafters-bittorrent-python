@@ -1,6 +1,7 @@
 import json
 import sys
 import hashlib
+import requests
 
 
 def decode_bencode(value: bytes, offset: int): 
@@ -123,6 +124,26 @@ Piece Hashes:""".format(self.url, self.length, self.info_hash, self.piece_length
         return details
 
 
+def query_tracker(file: TorrentFile):
+    params = {
+        "info_hash": bytes.fromhex(file.info_hash),
+        "peer_id": "55112233445566778899", # randomize later 
+        "port": 6881,
+        "uploaded": 0,
+        "downloaded": 0,
+        "left": file.length,
+        "compact": 1
+    }
+    response = requests.get(file.url, params)  
+    data, _ = decode_bencode(response.content, 0)
+    peers = []
+    for pdata in [data['peers'][i:i + 6] for i in range(0, len(data['peers']), 6)]:
+        port = int.from_bytes(pdata[4:], "big")
+        peer = '.'.join([str(p) for p in pdata[:4]]) + ':' + str(port)
+        peers.append(peer)
+    return peers
+
+
 def main():
     command = sys.argv[1]
 
@@ -143,6 +164,14 @@ def main():
             bencoded_value = f.read()
             file = TorrentFile(bencoded_value)
             print(file)
+    elif command == "peers":
+        file_path = sys.argv[2].encode()
+
+        with open(file_path, 'rb') as f:
+            bencoded_value = f.read()
+            file = TorrentFile(bencoded_value)
+            print("\n".join(query_tracker(file)))
+
     else:
         raise NotImplementedError(f"Unknown command {command}")
 
