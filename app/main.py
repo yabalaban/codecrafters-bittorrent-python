@@ -16,10 +16,14 @@ def decode_bencode(value: bytes, offset: int):
         nonlocal offset
         # skip 'i'
         offset += 1
+        negate = False 
+        if value[offset] == ord('-'):
+            negate = True
+            offset += 1
         val = _parse_number()
         # skip 'e'
         offset += 1
-        return val
+        return val * -1 if negate else val
         
     def decode_string() -> str:
         nonlocal offset
