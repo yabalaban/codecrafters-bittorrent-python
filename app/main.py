@@ -99,6 +99,30 @@ def encode_bencode(value: any) -> bytearray:
 
     return bencode
 
+
+class TorrentFile: 
+    def __init__(self, file_bytes: bytearray):
+        val, _ = decode_bencode(file_bytes, 0)
+        self.url = val["announce"].decode()
+        self.length = val["info"]["length"]
+        info_bencode = encode_bencode(val['info'])
+        self.info_hash = hashlib.sha1(info_bencode).hexdigest()
+        self.piece_length = val["info"]["piece length"] 
+        pieces = val["info"]["pieces"] 
+        self.piece_hashes = [pieces[i:i + 20].hex() for i in range(0, len(pieces), 20)]
+
+    def __repr__(self):
+        details = """Tracker URL: {}
+Length: {}
+Info Hash: {}
+Piece Length: {}
+Piece Hashes:""".format(self.url, self.length, self.info_hash, self.piece_length)
+        for hash in self.piece_hashes:
+            details += "\n" 
+            details += hash 
+        return details
+
+
 def main():
     command = sys.argv[1]
 
@@ -117,13 +141,8 @@ def main():
 
         with open(file_path, 'rb') as f:
             bencoded_value = f.read()
-            val, _ = decode_bencode(bencoded_value, 0)
-            url = val["announce"]
-            l = val["info"]["length"]
-            info_bencode = encode_bencode(val['info'])
-
-            res = "Tracker URL: {}\nLength: {}\nInfo Hash: {}".format(str(url, encoding='utf-8'), l, hashlib.sha1(info_bencode).hexdigest())
-            print(res)
+            file = TorrentFile(bencoded_value)
+            print(file)
     else:
         raise NotImplementedError(f"Unknown command {command}")
 
