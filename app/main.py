@@ -1,8 +1,11 @@
+from enum import Enum
+
 import json
 import sys
 import hashlib
 import requests
 import socket
+import os
 
 
 def decode_bencode(value: bytes, offset: int): 
@@ -167,18 +170,139 @@ class BitTorrentHandshakeMessage:
         packet.extend(peer_id)
         return BitTorrentHandshakeMessage(packet)
     
+    def __repr__(self):
+        return f"Handshake({self.info_hash=}, {self.peer_id=})"
+    
+
+class BitTorrentPeerMessageID(Enum):
+    CHOKE = 0
+    UNCHOKE = 1
+    INTERESTED = 2
+    NOT_INTERESTED = 3
+    HAVE = 4
+    BITFIELD = 5
+    REQUEST = 6
+    PIECE = 7
+    CANCEL = 8
+    UNKNOWN = 99
+
+
+class BitTorrentPeerMessage:
+    def __init__(self, packet: bytearray):
+        self.packet = packet
+
+    @property
+    def message_id(self) -> BitTorrentPeerMessageID:
+        try:
+            return BitTorrentPeerMessageID(self.packet[4])
+        except:
+            print("> unknown message", self.packet)
+            return BitTorrentPeerMessageID.UNKNOWN
+    
+    @property
+    def payload(self) -> bytearray:
+        return self.packet[5:]
+    
+    @property
+    def prefix(self) -> bytearray:
+        return int.from_bytes(self.packet[:4], "big")
+
+    @staticmethod
+    def make(message_id: BitTorrentPeerMessageID, payload: bytearray):
+        packet = bytearray()
+        packet.extend((len(payload) + 1).to_bytes(length=4, byteorder='big')) 
+        packet.append(message_id.value)
+        packet.extend(payload)
+        return BitTorrentPeerMessage(packet)
+    
+    def __repr__(self):
+        return f"Peer({self.message_id=}, {self.payload=})"
+
 
 def tcp_handshake(file: TorrentFile, peer: str):
     host, port = str(peer, encoding='utf-8').split(':')
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.connect((host, int(port)))
 
-    message = BitTorrentHandshakeMessage.make(bytes.fromhex(file.info_hash), b"00112233445566778899")
+    message = BitTorrentHandshakeMessage.make(bytes.fromhex(file.info_hash), bytes.fromhex(os.urandom(20).hex()))
     s.sendall(message.payload)
-    data = s.recv(1024)
-    s.close()
+    
+    data = s.recv(68)
+    msg = BitTorrentHandshakeMessage(data)
 
-    return BitTorrentHandshakeMessage(data)
+    return (s, msg)
+
+
+def receive_message(socket) -> BitTorrentPeerMessage:
+    data = bytearray()
+    prefix = socket.recv(4)
+    msg_len = int.from_bytes(prefix, "big")
+    data.extend(prefix)
+
+    remaining = msg_len
+    while len(data) < (msg_len + 4):
+        chunk = socket.recv(min(1024, remaining))
+        data.extend(chunk)
+        remaining -= len(chunk)
+
+    return BitTorrentPeerMessage(data)
+
+
+def download_piece(file: TorrentFile, idx: int, peer: str) -> bytearray:
+    piece_length = file.piece_length if idx < (len(file.piece_hashes) - 1) else file.length % file.piece_length
+    blocks_n = piece_length // (2 ** 14) + 1
+    piece = bytearray(piece_length)
+    scheduled = 0
+    received = 0
+    socket, msg = tcp_handshake(file, bytes(peer, encoding='utf-8'))
+    
+    while True:
+        msg = receive_message(socket)
+            
+        if msg.message_id == BitTorrentPeerMessageID.BITFIELD:
+            reply = BitTorrentPeerMessage.make(BitTorrentPeerMessageID.INTERESTED, bytearray())
+            socket.sendall(reply.packet)
+        elif msg.message_id == BitTorrentPeerMessageID.UNCHOKE:
+            packets = [] 
+            for i in range(blocks_n): 
+                payload = bytearray()
+                begin = i * (2 ** 14)
+                block = 2 ** 14 if i < blocks_n - 1 else piece_length % (2 ** 14)
+                if block == 0:
+                    continue
+                payload.extend(idx.to_bytes(4, byteorder='big'))
+                payload.extend(begin.to_bytes(4, byteorder='big'))
+                payload.extend(block.to_bytes(4, byteorder='big'))
+                reply = BitTorrentPeerMessage.make(BitTorrentPeerMessageID.REQUEST, payload)
+                packets.append(reply.packet)
+            scheduled = len(packets)
+            [socket.sendall(p) for p in packets]
+        elif msg.message_id == BitTorrentPeerMessageID.PIECE:
+            begin = int.from_bytes(msg.payload[4:8], "big")
+            block = msg.payload[8:]
+            piece[begin:begin + len(block)] = block
+            received += 1
+            if received == scheduled:
+                break
+    socket.close()
+
+    assert(hashlib.sha1(piece).hexdigest() == file.piece_hashes[idx])
+    return piece
+
+
+def download_piece_(file: TorrentFile, idx: int) -> bytearray:
+    peers = query_tracker(file)
+    peer = peers[1]
+    return download_piece(file, idx, peer)
+
+
+def download(file: TorrentFile, ) -> list[bytearray]:
+    peers = query_tracker(file)
+    peer = peers[1]
+    pieces = [0] * len(file.piece_hashes)
+    for i in range(len(file.piece_hashes)):
+        pieces[i] = download_piece(file, i, peer)
+    return b''.join(pieces)
 
 
 def main():
@@ -215,8 +339,29 @@ def main():
         with open(file_path, 'rb') as f:
             bencoded_value = f.read()
             file = TorrentFile(bencoded_value)
-            message = tcp_handshake(file, address)
+            _, message = tcp_handshake(file, address)
             print("Peer ID: {}".format(message.peer_id))
+    elif command == "download_piece":
+        output_path = sys.argv[3].encode()
+        file_path = sys.argv[4].encode()
+        idx = int(sys.argv[5].encode())
+
+        with open(file_path, 'rb') as f:
+            bencoded_value = f.read()
+            file = TorrentFile(bencoded_value)
+            piece = download_piece_(file, idx)
+            with open(output_path, 'wb') as o:
+                o.write(piece)
+    elif command == "download":
+        output_path = sys.argv[3].encode()
+        file_path = sys.argv[4].encode()
+
+        with open(file_path, 'rb') as f:
+            bencoded_value = f.read()
+            file = TorrentFile(bencoded_value)
+            piece = download(file)
+            with open(output_path, 'wb') as o:
+                o.write(piece)
     else:
         raise NotImplementedError(f"Unknown command {command}")
 
