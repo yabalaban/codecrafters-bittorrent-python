@@ -1,6 +1,7 @@
 from enum import Enum
 
 import json
+from multiprocessing.pool import ThreadPool
 import sys
 import hashlib
 import requests
@@ -241,7 +242,7 @@ def receive_message(socket) -> BitTorrentPeerMessage:
 
     remaining = msg_len
     while len(data) < (msg_len + 4):
-        chunk = socket.recv(min(1024, remaining))
+        chunk = socket.recv(min(2 ** 14, remaining))
         data.extend(chunk)
         remaining -= len(chunk)
 
@@ -296,13 +297,26 @@ def download_piece_(file: TorrentFile, idx: int) -> bytearray:
     return download_piece(file, idx, peer)
 
 
-def download(file: TorrentFile, ) -> list[bytearray]:
+def download(file: TorrentFile) -> list[bytearray]:
     peers = query_tracker(file)
-    peer = peers[1]
-    pieces = [0] * len(file.piece_hashes)
-    for i in range(len(file.piece_hashes)):
-        pieces[i] = download_piece(file, i, peer)
-    return b''.join(pieces)
+    pool = ThreadPool()
+
+    def runner(args):
+        pieces = {}
+        for i in args[1]: 
+            pieces[i] = download_piece(args[0], i, args[2])
+        return pieces
+
+    idxs = list(range(len(file.piece_hashes)))
+    args = [[file, idxs[:len(idxs) // 2], peers[1]], [file, idxs[len(idxs) // 2:], peers[2]]]
+
+    results = pool.map(runner, args)
+    results = {k: v for d in results for k, v in d.items()}
+
+    f = bytearray()
+    for i in idxs:
+        f.extend(results[i])
+    return f
 
 
 def main():
